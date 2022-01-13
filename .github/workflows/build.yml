@@ -60,7 +60,7 @@ jobs:
       - name: Run checks
         run: |
           echo $PATH
-          go env
+          go env -w GOFLAGS=-mod=mod
           echo ${{ github.workspace }}
           echo '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' > ~/.npmrc
           echo '@hyperledger:registry=https://npm.pkg.github.com' >> ~/.npmrc
@@ -80,7 +80,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Run unit test
-        run: make unit-test
+        run: |
+          go env -w GOFLAGS=-mod=mod
+          make unit-test
       - name: Upload coverage to Codecov
         run: |
           bash <(curl https://codecov.io/bash)
@@ -119,6 +121,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - name: Run Wallet Web UI automation
         run: |
+          go env -w GOFLAGS=-mod=mod
           echo '127.0.0.1 testnet.orb.local' | sudo tee -a /etc/hosts
           echo '127.0.0.1 wallet.trustbloc.local' | sudo tee -a /etc/hosts
           echo '127.0.0.1 wallet-server.trustbloc.local' | sudo tee -a /etc/hosts
