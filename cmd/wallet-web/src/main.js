@@ -19,4 +19,12 @@ app.use(store);
 app.use(i18n);
 app.component('ToastNotification', ToastNotificationComponent);
 
+app.config.errorHandler = (err, instance, info) => {
+  console.error('errorHandler captured error:', err, 'on instance:', instance, 'with info:', info);
+  if (err.includes('401 Unauthorized')) {
+    console.log('handling expired token error');
+    router.push(' ');
+  }
+};
+
 app.mount('#app');

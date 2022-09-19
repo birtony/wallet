@@ -10,7 +10,8 @@ import { getBootstrapData } from '@/mixins/gnap/gnap';
 import { clearGnapStoreData, exportJWKGnapPrivateKey } from '@/mixins/gnap/store';
 import { RegisterWallet } from '@/mixins';
 
-export const parseTIme = (ns) => parseInt(ns) * 60 * 10 ** 9;
+// Convert minutes to milliseconds
+export const parseTime = (ns) => parseInt(ns) * 60 * 10 ** 3;
 
 export default {
   state: {
@@ -332,7 +333,7 @@ export default {
 
           if (process.env.NODE_ENV === 'production') {
             const newOpts = await getBootstrapData(agentOpts, hubAuthURL, dispatch, accessToken);
-
+            console.log('newOPts', newOpts);
             if (newOpts?.newAgentOpts) {
               Object.assign(agentOpts, newOpts?.newAgentOpts);
               commit('updateAgentOpts', agentOpts, { root: true });
@@ -367,7 +368,7 @@ export default {
 
           const profileOpts = rootGetters.getProfileOpts;
 
-          const { user } = profileOpts.bootstrap.data;
+          const { user, tokenExpiry } = profileOpts.bootstrap.data;
 
           const walletUser = new WalletUser({ agent: state.instance, user });
           if (!(await walletUser.profileExists())) {
@@ -375,7 +376,9 @@ export default {
             await walletUser.createWalletProfile(createOpts);
           }
 
-          const { token } = await walletUser.unlock(profileUnlockOpts(profileOpts));
+          const opts = getUnlockWalletUserOpts(profileOpts);
+          const { token } = await walletUser.unlock(opts);
+          const expiry = new Date().now() + tokenExpiry;
 
           await dispatch('refreshUserPreference', { user, token }, { root: true });
 
@@ -474,7 +477,7 @@ function profileCreationOpts(profileOpts) {
   return { keyStoreURL, localKMSPassphrase, edvConfiguration };
 }
 
-function profileUnlockOpts(profileOpts) {
+function getUnlockWalletUserOpts(profileOpts) {
   const { bootstrap, userConfig, config } = profileOpts;
 
   let webKMSAuth, localKMSPassphrase, edvUnlocks;
@@ -504,5 +507,5 @@ function profileUnlockOpts(profileOpts) {
     };
   }
 
-  return { webKMSAuth, localKMSPassphrase, edvUnlocks, expiry: parseTIme(bootstrap.tokenExpiry) };
+  return { webKMSAuth, localKMSPassphrase, edvUnlocks, expiry: parseTime(bootstrap.tokenExpiry) };
 }
