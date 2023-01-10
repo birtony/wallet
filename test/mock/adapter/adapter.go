@@ -1139,6 +1139,164 @@ func (v *adapterApp) openid4vcInitiatePreAuthorizedIssuance(w http.ResponseWrite
 	})
 }
 
+func (v *adapterApp) openid4vcIssuerTokenEndpoint(w http.ResponseWriter, r *http.Request) {
+	setOIDCResponseHeaders(w)
+
+	code := r.FormValue("code")
+	fmt.Println("code", code)
+	redirectURI := r.FormValue("redirect_uri")
+	fmt.Println("redirectURI", redirectURI)
+	grantType := r.FormValue("grant_type")
+	fmt.Println("grantType", grantType)
+
+	if grantType != "urn:ietf:params:oauth:grant-type:pre-authorized_code" {
+		sendOIDCErrorResponse(w, "unsupported grant type", http.StatusBadRequest)
+		return
+	}
+
+	pin, err := v.store.Get(secret)
+	fmt.Println("pin", pin)
+
+	authState, err := v.store.Get(getAuthCodeKeyPrefix(code))
+	if err != nil {
+		sendOIDCErrorResponse(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+
+	authRqstBytes, err := v.store.Get(getAuthStateKeyPrefix(string(authState)))
+	if err != nil {
+		sendOIDCErrorResponse(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var authRequest map[string]string
+	err = json.Unmarshal(authRqstBytes, &authRequest)
+	if err != nil {
+		sendOIDCErrorResponse(w, "failed to read request", http.StatusInternalServerError)
+		return
+	}
+
+	if authRedirectURI := authRequest["redirect_uri"]; authRedirectURI != redirectURI {
+		sendOIDCErrorResponse(w, "request validation failed", http.StatusInternalServerError)
+		return
+	}
+
+	mockAccessToken := uuid.NewString()
+	mockIssuerID := mux.Vars(r)["id"]
+
+	err = v.store.Put(getAccessTokenKeyPrefix(mockAccessToken), []byte(mockIssuerID))
+	if err != nil {
+		sendOIDCErrorResponse(w, "failed to save token state", http.StatusInternalServerError)
+		return
+	}
+
+	response, err := json.Marshal(map[string]interface{}{
+		"token_type":   "Bearer",
+		"access_token": mockAccessToken,
+		"expires_in":   3600 * time.Second,
+	})
+	// TODO add id_token, c_nonce, c_nonce_expires_in
+	if err != nil {
+		sendOIDCErrorResponse(w, "response_write_error", http.StatusBadRequest)
+
+		return
+	}
+
+	w.Write(response)
+}
+
+func (v *adapterApp) openid4vcIssuerCredentialEndpoint(w http.ResponseWriter, r *http.Request) {
+	setOIDCResponseHeaders(w)
+
+	format := r.FormValue("format")
+	credentialType := r.FormValue("type")
+
+	if format != "" && format != "ldp_vc" && format != "jwt_vc" {
+		sendOIDCErrorResponse(w, "unsupported format requested", http.StatusBadRequest)
+		return
+	}
+
+	authHeader := strings.Split(r.Header.Get("Authorization"), "Bearer ")
+	if len(authHeader) != 2 {
+		sendOIDCErrorResponse(w, "malformed token", http.StatusBadRequest)
+		return
+	}
+
+	if authHeader[1] == "" {
+		sendOIDCErrorResponse(w, "invalid token", http.StatusForbidden)
+		return
+	}
+
+	mockIssuerID := mux.Vars(r)["id"]
+
+	issuerID, err := v.store.Get(getAccessTokenKeyPrefix(authHeader[1]))
+	if err != nil {
+		sendOIDCErrorResponse(w, "unsupported format requested", http.StatusBadRequest)
+		return
+	}
+
+	if mockIssuerID != string(issuerID) {
+		sendOIDCErrorResponse(w, "invalid transaction", http.StatusForbidden)
+		return
+	}
+
+	credentialBytes, err := v.store.Get(getCredStoreKeyPrefix(mockIssuerID, credentialType))
+	if err != nil {
+		sendOIDCErrorResponse(w, "failed to get credential", http.StatusInternalServerError)
+		return
+	}
+
+	docLoader := ld.NewDefaultDocumentLoader(nil)
+	credential, err := verifiable.ParseCredential(credentialBytes, verifiable.WithJSONLDDocumentLoader(docLoader))
+	if err != nil {
+		sendOIDCErrorResponse(w, "failed to prepare credential", http.StatusInternalServerError)
+		return
+	}
+
+	var credBytes []byte
+
+	switch format {
+	case "", "ldp", "ldp_vc":
+		err = signCredentialWithED25519(credential)
+		if err != nil {
+			sendOIDCErrorResponse(w, "failed to issue credential", http.StatusInternalServerError)
+			return
+		}
+
+		credBytes, err = credential.MarshalJSON()
+		if err != nil {
+			sendOIDCErrorResponse(w, "failed to write credential bytes", http.StatusInternalServerError)
+			return
+		}
+	case "jwt", "jwt_vc":
+		claims, err := credential.JWTClaims(false)
+		if err != nil {
+			sendOIDCErrorResponse(w, "failed to create credential claims", http.StatusInternalServerError)
+			return
+		}
+
+		jws, err := signJWTCredentialWithED25519(claims)
+		if err != nil {
+			sendOIDCErrorResponse(w, "failed to issue JWT credential", http.StatusInternalServerError)
+			return
+		}
+
+		credBytes = []byte("\"" + jws + "\"")
+	}
+
+	response, err := json.Marshal(map[string]interface{}{
+		"format":     format,
+		"credential": json.RawMessage(credBytes),
+	})
+	// TODO add support for acceptance token & nonce for deferred flow.
+	if err != nil {
+		sendOIDCErrorResponse(w, "response_write_error", http.StatusBadRequest)
+		return
+	}
+
+	w.Write(response)
+}
+
 func listenForDIDCommMsg(actionCh chan service.DIDCommAction, store storage.Store) {
 	for action := range actionCh {
 		logger.Infof("received action message : type=%s", action.Message.Type())
